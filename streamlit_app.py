@@ -1,7 +1,7 @@
 import asyncio
+import hashlib
 import logging
 import time
-import traceback
 
 import streamlit as st
 import inngest
@@ -40,13 +40,11 @@ st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="center
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    api_base_url = os.getenv("INNGEST_API_BASE", "https://api.inngest.com")
-    st.write(f"DEBUG api_base_url={api_base_url}")
-    st.write(f"DEBUG is_production={_inngest_is_production()}")
+    api_base_url = os.getenv("INNGEST_API_BASE", "http://localhost:8288")
     return inngest.Inngest(
         api_base_url=api_base_url,
         app_id="rag_app",
-        event_key=os.environ["INNGEST_EVENT_KEY"],
+        event_key=os.getenv("INNGEST_EVENT_KEY", "local"),
         signing_key=os.getenv("INNGEST_SIGNING_KEY"),
         is_production=_inngest_is_production(),
         request_timeout=120_000,
@@ -65,30 +63,37 @@ async def send_rag_ingest_event(object_key: str, source_id: str) -> None:
                 },
             )
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Inngest ingestion event send failed")
-        st.error(f"DEBUG: {type(e).__name__}: {e}")
-        st.code(traceback.format_exc())
+        raise
 
 
 st.title("Upload a PDF to Ingest")
 uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
 
 if uploaded is not None:
-    with st.spinner("Uploading and triggering ingestion..."):
-        object_key = upload_pdf(uploaded.name, uploaded.getvalue())
-        # Kick off the event and block until the send completes
-        run_async(send_rag_ingest_event(object_key, uploaded.name))
-        # Small pause for user feedback continuity
-        time.sleep(0.3)
-    st.success(f"Triggered ingestion for: {uploaded.name}")
+    file_bytes = uploaded.getvalue()
+    upload_id = hashlib.sha256(uploaded.name.encode() + file_bytes).hexdigest()
+    if st.session_state.get("last_upload_id") != upload_id:
+        with st.spinner("Uploading and triggering ingestion..."):
+            try:
+                object_key = upload_pdf(uploaded.name, file_bytes)
+                run_async(send_rag_ingest_event(object_key, uploaded.name))
+            except Exception as exc:
+                st.error(f"Could not start ingestion: {exc}")
+                st.caption("Check that the Inngest dev server and API are running, then retry.")
+            else:
+                st.session_state["last_upload_id"] = upload_id
+                st.success(f"Triggered ingestion for: {uploaded.name}")
+    else:
+        st.success(f"Ingestion was already triggered for: {uploaded.name}")
     st.caption("You can upload another PDF if you like.")
 
 st.divider()
 st.title("Ask a question about your PDFs")
 
 
-async def send_rag_query_event(question: str, top_k: int) -> None:
+async def send_rag_query_event(question: str, top_k: int) -> str:
     client = get_inngest_client()
     try:
         result = await client.send(
@@ -107,14 +112,15 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
 
 
 def _inngest_api_base() -> str:
-    return os.getenv("INNGEST_API_BASE", "https://api.inngest.com").rstrip("/")
+    return os.getenv("INNGEST_API_BASE", "http://localhost:8288").rstrip("/")
 
 
 def fetch_runs(event_id: str) -> list[dict]:
     url = f"{_inngest_api_base()}/v1/events/{event_id}/runs"
-    headers = {
-        "Authorization": f"Bearer {os.environ['INNGEST_SIGNING_KEY']}",
-    }
+    headers = {}
+    signing_key = os.getenv("INNGEST_SIGNING_KEY")
+    if signing_key:
+        headers["Authorization"] = f"Bearer {signing_key}"
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
     data = resp.json()
@@ -147,9 +153,14 @@ with st.form("rag_query_form"):
     if submitted and question.strip():
         with st.spinner("Sending event and generating answer..."):
             # Fire-and-forget event to Inngest for observability/workflow
-            event_id = run_async(send_rag_query_event(question.strip(), int(top_k)))
-            # Poll the local Inngest API for the run's output
-            output = wait_for_run_output(event_id)
+            try:
+                event_id = run_async(send_rag_query_event(question.strip(), int(top_k)))
+                # Poll the configured Inngest API for the run's output
+                output = wait_for_run_output(event_id)
+            except Exception as exc:
+                st.error(f"The query did not finish: {exc}")
+                st.caption("Check the Inngest dashboard and API/worker terminal for details.")
+                st.stop()
             answer = output.get("answer", "")
             sources = output.get("sources", [])
 

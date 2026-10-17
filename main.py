@@ -28,9 +28,9 @@ def _inngest_is_production() -> bool:
 qdrant_store = QdrantStorage()
 
 inngest_client = inngest.Inngest(
-    api_base_url=os.getenv("INNGEST_API_BASE", "https://api.inngest.com"),
+    api_base_url=os.getenv("INNGEST_API_BASE", "http://localhost:8288"),
     app_id="rag_app",
-    event_key=os.getenv("INNGEST_EVENT_KEY"),
+    event_key=os.getenv("INNGEST_EVENT_KEY", "local"),
     signing_key=os.getenv("INNGEST_SIGNING_KEY"),
     logger=logging.getLogger("uvicorn"),
     is_production=_inngest_is_production(),

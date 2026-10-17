@@ -1,4 +1,5 @@
 import os
+import shutil
 import tempfile
 import uuid
 from pathlib import Path
@@ -6,6 +7,22 @@ from typing import Any
 from urllib.parse import urlparse
 
 import boto3
+
+
+def _storage_backend() -> str:
+    configured_backend = os.getenv("STORAGE_BACKEND")
+    if configured_backend is None:
+        configured_backend = "s3" if os.getenv("STORAGE_BUCKET_URL") else "local"
+
+    backend = configured_backend.strip().lower()
+    if backend not in {"local", "s3"}:
+        raise ValueError("STORAGE_BACKEND must be 'local' or 's3'")
+    return backend
+
+
+def _local_storage_root() -> Path:
+    configured_path = os.getenv("STORAGE_LOCAL_DIR", "data/uploads")
+    return Path(configured_path).expanduser().resolve()
 
 
 def _storage_location() -> tuple[Any, str, str]:
@@ -42,9 +59,19 @@ def _storage_location() -> tuple[Any, str, str]:
 
 
 def upload_pdf(file_name: str, file_bytes: bytes) -> str:
-    client, bucket, prefix = _storage_location()
     object_name = Path(file_name).name
     object_key = f"{uuid.uuid4()}/{object_name}"
+
+    if _storage_backend() == "local":
+        root = _local_storage_root()
+        destination = (root / object_key).resolve()
+        if root not in destination.parents:
+            raise ValueError("PDF path must stay inside the local storage directory")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(file_bytes)
+        return object_key
+
+    client, bucket, prefix = _storage_location()
     if prefix:
         object_key = f"{prefix}/{object_key}"
 
@@ -58,6 +85,23 @@ def upload_pdf(file_name: str, file_bytes: bytes) -> str:
 
 
 def download_pdf(object_key: str) -> str:
+    if _storage_backend() == "local":
+        root = _local_storage_root()
+        source = (root / object_key).resolve()
+        if root not in source.parents:
+            raise ValueError("PDF path must stay inside the local storage directory")
+        if not source.is_file():
+            raise FileNotFoundError(f"PDF not found in local storage: {object_key}")
+
+        temporary_file = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        temporary_file.close()
+        try:
+            shutil.copyfile(source, temporary_file.name)
+        except Exception:
+            Path(temporary_file.name).unlink(missing_ok=True)
+            raise
+        return temporary_file.name
+
     client, bucket, _ = _storage_location()
     temporary_file = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
     temporary_file.close()
