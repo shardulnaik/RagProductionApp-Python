@@ -6,8 +6,8 @@ from qdrant_client.models import VectorParams, Distance, PointStruct, Filter, Fi
 class QdrantStorage:
     def __init__(self, collection: str | None = None, dim=1536):
         self.client = QdrantClient(
-            url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-            api_key=os.getenv("QDRANT_API_KEY"),
+            url=os.environ["QDRANT_URL"],
+            api_key=os.environ["QDRANT_API_KEY"],
             timeout=30,
         )
         # Keep Gemini vectors isolated from the existing OpenAI collection.

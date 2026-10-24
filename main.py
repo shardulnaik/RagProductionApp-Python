@@ -5,7 +5,6 @@ import asyncio
 from pathlib import Path
 from typing import Any, cast
 from fastapi import FastAPI
-from dotenv import load_dotenv
 import inngest
 import inngest.fast_api
 from google import genai
@@ -15,35 +14,20 @@ from data_loader import EMBED_DIM, load_and_chunk_pdf, embed_texts
 from storage import download_pdf
 from vector_db import QdrantStorage
 
-load_dotenv()
-
 LLM_MODEL = "gemini-3.8-flash"
-
-
-def _inngest_is_production() -> bool:
-    configured_mode = os.getenv("INNGEST_IS_PRODUCTION")
-    if configured_mode is not None:
-        return configured_mode.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(os.getenv("INNGEST_SIGNING_KEY"))
-
-
-def _inngest_api_base_url() -> str:
-    configured_base = os.getenv("INNGEST_API_BASE")
-    if configured_base:
-        return configured_base.rstrip("/")
-    return "https://api.inngest.com" if _inngest_is_production() else "http://localhost:8288"
+INNGEST_API_BASE_URL = "https://api.inngest.com"
 
 
 # Initialize Vector DB globally
 qdrant_store = QdrantStorage(dim=EMBED_DIM)
 
 inngest_client = inngest.Inngest(
-    api_base_url=_inngest_api_base_url(),
+    api_base_url=INNGEST_API_BASE_URL,
     app_id="rag_app",
-    event_key=os.getenv("INNGEST_EVENT_KEY", "local"),
-    signing_key=os.getenv("INNGEST_SIGNING_KEY"),
+    event_key=os.environ["INNGEST_EVENT_KEY"],
+    signing_key=os.environ["INNGEST_SIGNING_KEY"],
     logger=logging.getLogger("uvicorn"),
-    is_production=_inngest_is_production(),
+    is_production=True,
 )
 
 # ------------------------------------------------------------------

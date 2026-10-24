@@ -5,30 +5,15 @@ import time
 
 import streamlit as st
 import inngest
-from dotenv import load_dotenv
 import os
 import requests
 
 from storage import upload_pdf
 
-load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger(__name__)
-
-
-def _inngest_is_production() -> bool:
-    configured_mode = os.getenv("INNGEST_IS_PRODUCTION")
-    if configured_mode is not None:
-        return configured_mode.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(os.getenv("INNGEST_SIGNING_KEY"))
-
-
-def _inngest_api_base_url() -> str:
-    configured_base = os.getenv("INNGEST_API_BASE")
-    if configured_base:
-        return configured_base.rstrip("/")
-    return "https://api.inngest.com" if _inngest_is_production() else "http://localhost:8288"
+INNGEST_API_BASE_URL = "https://api.inngest.com"
 
 
 def run_async(coro):
@@ -44,16 +29,33 @@ def run_async(coro):
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
+required_frontend_settings = (
+    "INNGEST_EVENT_KEY",
+    "INNGEST_SIGNING_KEY",
+    "STORAGE_BUCKET_URL",
+    "STORAGE_ACCESS_KEY",
+    "STORAGE_SECRET_KEY",
+)
+missing_frontend_settings = [
+    name for name in required_frontend_settings if not os.getenv(name)
+]
+if missing_frontend_settings:
+    st.error(
+        "Deployment settings are missing: "
+        + ", ".join(missing_frontend_settings)
+        + ". Add them in Streamlit Community Cloud → App settings → Secrets."
+    )
+    st.stop()
+
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    api_base_url = _inngest_api_base_url()
     return inngest.Inngest(
-        api_base_url=api_base_url,
+        api_base_url=INNGEST_API_BASE_URL,
         app_id="rag_app",
-        event_key=os.getenv("INNGEST_EVENT_KEY", "local"),
-        signing_key=os.getenv("INNGEST_SIGNING_KEY"),
-        is_production=_inngest_is_production(),
+        event_key=os.environ["INNGEST_EVENT_KEY"],
+        signing_key=os.environ["INNGEST_SIGNING_KEY"],
+        is_production=True,
         request_timeout=120_000,
     )
 
@@ -75,6 +77,40 @@ async def send_rag_ingest_event(object_key: str, source_id: str, source_name: st
     except Exception:
         logger.exception("Inngest ingestion event send failed")
         raise
+
+
+def _inngest_api_base() -> str:
+    return INNGEST_API_BASE_URL
+
+
+def fetch_runs(event_id: str) -> list[dict]:
+    url = f"{_inngest_api_base()}/v1/events/{event_id}/runs"
+    headers = {}
+    signing_key = os.getenv("INNGEST_SIGNING_KEY")
+    if signing_key:
+        headers["Authorization"] = f"Bearer {signing_key}"
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("data", [])
+
+
+def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s: float = 0.5) -> dict:
+    start = time.time()
+    last_status = None
+    while True:
+        runs = fetch_runs(event_id)
+        if runs:
+            run = runs[0]
+            status = run.get("status")
+            last_status = status or last_status
+            if status in ("Completed", "Succeeded", "Success", "Finished"):
+                return run.get("output") or {}
+            if status in ("Failed", "Cancelled"):
+                raise RuntimeError(f"Function run {status}")
+        if time.time() - start > timeout_s:
+            raise TimeoutError(f"Timed out waiting for run output (last status: {last_status})")
+        time.sleep(poll_interval_s)
 
 
 st.title("Upload a PDF to Ingest")
@@ -108,7 +144,7 @@ if uploaded is not None:
                     )
             except Exception as exc:
                 st.error(f"Could not finish ingestion: {exc}")
-                st.caption("Check that the Inngest dev server and API are running, then retry.")
+                st.caption("Check the Streamlit, Render, and Inngest deployment logs, then retry.")
             else:
                 st.session_state["last_upload_id"] = upload_id
                 uploaded_sources[upload_id] = uploaded.name
@@ -161,40 +197,6 @@ async def send_rag_query_event(question: str, top_k: int, source_ids: list[str])
     except Exception:
         logger.exception("Inngest query event send failed")
         raise
-
-
-def _inngest_api_base() -> str:
-    return _inngest_api_base_url()
-
-
-def fetch_runs(event_id: str) -> list[dict]:
-    url = f"{_inngest_api_base()}/v1/events/{event_id}/runs"
-    headers = {}
-    signing_key = os.getenv("INNGEST_SIGNING_KEY")
-    if signing_key:
-        headers["Authorization"] = f"Bearer {signing_key}"
-    resp = requests.get(url, headers=headers, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("data", [])
-
-
-def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s: float = 0.5) -> dict:
-    start = time.time()
-    last_status = None
-    while True:
-        runs = fetch_runs(event_id)
-        if runs:
-            run = runs[0]
-            status = run.get("status")
-            last_status = status or last_status
-            if status in ("Completed", "Succeeded", "Success", "Finished"):
-                return run.get("output") or {}
-            if status in ("Failed", "Cancelled"):
-                raise RuntimeError(f"Function run {status}")
-        if time.time() - start > timeout_s:
-            raise TimeoutError(f"Timed out waiting for run output (last status: {last_status})")
-        time.sleep(poll_interval_s)
 
 
 with st.form("rag_query_form"):
