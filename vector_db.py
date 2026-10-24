@@ -4,13 +4,14 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import VectorParams, Distance, PointStruct, Filter, FieldCondition, MatchAny
 
 class QdrantStorage:
-    def __init__(self, collection="docs", dim=1536):
+    def __init__(self, collection: str | None = None, dim=1536):
         self.client = QdrantClient(
             url=os.getenv("QDRANT_URL", "http://localhost:6333"),
             api_key=os.getenv("QDRANT_API_KEY"),
             timeout=30,
         )
-        self.collection = collection
+        # Keep Gemini vectors isolated from the existing OpenAI collection.
+        self.collection = collection or os.getenv("QDRANT_COLLECTION", "docs_gemini")
         self.dim = dim
 
     def _ensure_collection(self):

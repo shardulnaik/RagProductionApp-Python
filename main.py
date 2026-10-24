@@ -8,13 +8,16 @@ from fastapi import FastAPI
 from dotenv import load_dotenv
 import inngest
 import inngest.fast_api
-from openai import OpenAI
+from google import genai
+from google.genai import types
 
-from data_loader import load_and_chunk_pdf, embed_texts
+from data_loader import EMBED_DIM, load_and_chunk_pdf, embed_texts
 from storage import download_pdf
 from vector_db import QdrantStorage
 
 load_dotenv()
+
+LLM_MODEL = "gemini-3.8-flash"
 
 
 def _inngest_is_production() -> bool:
@@ -25,7 +28,7 @@ def _inngest_is_production() -> bool:
 
 
 # Initialize Vector DB globally
-qdrant_store = QdrantStorage()
+qdrant_store = QdrantStorage(dim=EMBED_DIM)
 
 inngest_client = inngest.Inngest(
     api_base_url=os.getenv("INNGEST_API_BASE", "http://localhost:8288"),
@@ -68,7 +71,7 @@ async def rag_ingest_pdf(ctx: inngest.Context) -> dict[str, Any]:
 
     # Step 2: Embed and Upsert
     async def _upsert() -> dict[str, int]:
-        vecs = await asyncio.to_thread(embed_texts, chunks)
+        vecs = await asyncio.to_thread(embed_texts, chunks, input_type="document")
         ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
         payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]
         
@@ -102,7 +105,7 @@ async def rag_query_pdf_ai(ctx: inngest.Context) -> dict[str, Any]:
 
     # Step 1: Search Vector DB
     async def _search() -> dict[str, Any]:
-        query_vecs = await asyncio.to_thread(embed_texts, [question])
+        query_vecs = await asyncio.to_thread(embed_texts, [question], input_type="query")
         query_vec = query_vecs[0]
         
         found = qdrant_store.search(query_vec, top_k, source_ids or None)
@@ -120,7 +123,7 @@ async def rag_query_pdf_ai(ctx: inngest.Context) -> dict[str, Any]:
 
     # Step 2: LLM Inference
     async def _llm() -> str:
-        client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
         context_block = "\n\n".join(f"- {c}" for c in contexts)
         user_content = (
             "Use the following context to answer the question.\n\n"
@@ -130,18 +133,17 @@ async def rag_query_pdf_ai(ctx: inngest.Context) -> dict[str, Any]:
         )
 
         response = await asyncio.to_thread(
-            client.chat.completions.create,
-            model="gpt-4o-mini",
-            temperature=0.2,
-            max_tokens=1024,
-            messages=[
-                {"role": "system", "content": "You answer questions using only the provided context."},
-                {"role": "user", "content": user_content}
-            ]
+            client.models.generate_content,
+            model=LLM_MODEL,
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction="You answer questions using only the provided context.",
+                temperature=0.2,
+                max_output_tokens=1024,
+            ),
         )
-        
-        # Fix 4: Safely narrow None -> str before calling .strip()
-        content = response.choices[0].message.content
+
+        content = response.text
         return content.strip() if content is not None else ""
 
     answer: str = await ctx.step.run("llm-answer", _llm)

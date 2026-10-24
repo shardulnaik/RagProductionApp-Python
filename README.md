@@ -7,7 +7,7 @@ A production-grade RAG application with **observability, logging, retries, and r
 - **Frontend:** Streamlit
 - **Vector DB:** Qdrant
 - **Ingestion:** LlamaIndex
-- **AI:** OpenAI
+- **AI:** Google Gemini
 
 ## Key Features
 - **Production Workflow:** Automatic retries, execution logging, error handling
@@ -18,9 +18,13 @@ A production-grade RAG application with **observability, logging, retries, and r
 ## Run Locally (Windows PowerShell)
 
 Requirements: Python 3.13+, `uv`, Node.js/npm, and Docker Desktop. Copy
-`.env.example` to `.env` and set `OPENAI_API_KEY`. The default local setup stores
+`.env.example` to `.env` and set `GEMINI_API_KEY`. The default local setup stores
 PDFs under `data/uploads`, uses local Qdrant and Inngest, and does not require
 S3-compatible storage credentials.
+
+Gemini embeddings use a separate `docs_gemini` Qdrant collection by default.
+Existing vectors in the original `docs` collection remain untouched. Re-upload
+PDFs after switching providers so they are embedded with Gemini before querying.
 
 Install dependencies from the repository root:
 
@@ -62,7 +66,7 @@ and provide `STORAGE_BUCKET_URL`, `STORAGE_ACCESS_KEY`, and
 
 ## Architecture
 ```
-Streamlit → Inngest → OpenAI API
+Streamlit → Inngest → Google Gemini API
               ↓
          Qdrant ← LlamaIndex
 ```

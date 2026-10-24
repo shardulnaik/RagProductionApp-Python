@@ -1,19 +1,20 @@
 import os
 from pathlib import Path
-from openai import OpenAI
+from google import genai
+from google.genai import types
 from llama_index.readers.file import PDFReader
 from llama_index.core.node_parser import SentenceSplitter
 from dotenv import load_dotenv
 
 load_dotenv()
 
-EMBED_MODEL = "text-embedding-3-small"
+EMBED_MODEL = "gemini-embedding-2"
 EMBED_DIM = 1536
 
 splitter = SentenceSplitter(chunk_size=1000, chunk_overlap=200)
 
-def get_openai_client():
-    return OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+def get_gemini_client():
+    return genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
 def load_and_chunk_pdf(path: str) -> list[str]:
     file_path = Path(path)
@@ -32,14 +33,27 @@ def load_and_chunk_pdf(path: str) -> list[str]:
         chunks.extend(splitter.split_text(t))
     return chunks
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
+def embed_texts(texts: list[str], *, input_type: str = "document") -> list[list[float]]:
     if not texts:
         return []
+
+    if input_type == "document":
+        contents = [f"title: none | text: {text}" for text in texts]
+    elif input_type == "query":
+        contents = [f"task: question answering | query: {text}" for text in texts]
+    else:
+        raise ValueError("input_type must be 'document' or 'query'")
         
-    client = get_openai_client()
-    response = client.embeddings.create(
+    client = get_gemini_client()
+    response = client.models.embed_content(
         model=EMBED_MODEL,
-        input=texts,
+        contents=[
+            types.Content(parts=[types.Part(text=text)], role="user")
+            for text in contents
+        ],
+        config=types.EmbedContentConfig(output_dimensionality=EMBED_DIM),
     )
-    return [item.embedding for item in response.data]
+    if response.embeddings is None:
+        raise RuntimeError("Gemini returned no embeddings")
+    return [embedding.values for embedding in response.embeddings]
 
