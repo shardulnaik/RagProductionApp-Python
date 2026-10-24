@@ -55,6 +55,8 @@ async def rag_ingest_pdf(ctx: inngest.Context) -> dict[str, Any]:
     
     raw_source_id = ctx.event.data.get("source_id")
     source_id: str = raw_source_id if isinstance(raw_source_id, str) and raw_source_id else object_key
+    raw_source_name = ctx.event.data.get("source_name")
+    source_name = raw_source_name if isinstance(raw_source_name, str) and raw_source_name else Path(object_key).name
 
     # Step 1: Load and Chunk PDF
     async def _load() -> list[str]:
@@ -73,7 +75,10 @@ async def rag_ingest_pdf(ctx: inngest.Context) -> dict[str, Any]:
     async def _upsert() -> dict[str, int]:
         vecs = await asyncio.to_thread(embed_texts, chunks, input_type="document")
         ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
-        payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]
+        payloads = [
+            {"source": source_name, "source_id": source_id, "text": chunks[i]}
+            for i in range(len(chunks))
+        ]
         
         qdrant_store.upsert(ids, vecs, payloads)
         return {"ingested": len(chunks)}
@@ -102,13 +107,19 @@ async def rag_query_pdf_ai(ctx: inngest.Context) -> dict[str, Any]:
     top_k: int = int(raw_top_k) if isinstance(raw_top_k, (int, str)) else 5
     raw_source_ids = ctx.event.data.get("source_ids", [])
     source_ids = [source for source in raw_source_ids if isinstance(source, str)] if isinstance(raw_source_ids, list) else []
+    if not source_ids:
+        return {
+            "answer": "Select an uploaded PDF before asking a question.",
+            "sources": [],
+            "num_contexts": 0,
+        }
 
     # Step 1: Search Vector DB
     async def _search() -> dict[str, Any]:
         query_vecs = await asyncio.to_thread(embed_texts, [question], input_type="query")
         query_vec = query_vecs[0]
         
-        found = qdrant_store.search(query_vec, top_k, source_ids or None)
+        found = qdrant_store.search(query_vec, top_k, source_ids)
         
         contexts = cast(list[str], found.get("contexts", []))
         raw_sources = cast(list[Any], found.get("sources", []))
@@ -120,6 +131,13 @@ async def rag_query_pdf_ai(ctx: inngest.Context) -> dict[str, Any]:
 
     contexts: list[str] = cast(list[str], found.get("contexts", []))
     sources: list[str] = cast(list[str], found.get("sources", []))
+
+    if not contexts:
+        return {
+            "answer": "No matching text was found in the selected PDFs. Try re-uploading them to ingest the current copies.",
+            "sources": [],
+            "num_contexts": 0,
+        }
 
     # Step 2: LLM Inference
     async def _llm() -> str:

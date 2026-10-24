@@ -51,7 +51,7 @@ def get_inngest_client() -> inngest.Inngest:
     )
 
 
-async def send_rag_ingest_event(object_key: str, source_id: str) -> str:
+async def send_rag_ingest_event(object_key: str, source_id: str, source_name: str) -> str:
     client = get_inngest_client()
     try:
         result = await client.send(
@@ -60,6 +60,7 @@ async def send_rag_ingest_event(object_key: str, source_id: str) -> str:
                 data={
                     "object_key": object_key,
                     "source_id": source_id,
+                    "source_name": source_name,
                 },
             )
         )
@@ -71,6 +72,14 @@ async def send_rag_ingest_event(object_key: str, source_id: str) -> str:
 
 st.title("Upload a PDF to Ingest")
 uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
+if st.session_state.get("upload_state_version") != 2:
+    st.session_state["last_upload_id"] = None
+    st.session_state["uploaded_sources"] = {}
+    st.session_state["upload_state_version"] = 2
+uploaded_sources = st.session_state.get("uploaded_sources")
+if not isinstance(uploaded_sources, dict):
+    uploaded_sources = {}
+    st.session_state["uploaded_sources"] = uploaded_sources
 
 if uploaded is not None:
     file_bytes = uploaded.getvalue()
@@ -79,30 +88,49 @@ if uploaded is not None:
         with st.spinner("Uploading and triggering ingestion..."):
             try:
                 object_key = upload_pdf(uploaded.name, file_bytes)
-                ingest_event_id = run_async(send_rag_ingest_event(object_key, uploaded.name))
-                wait_for_run_output(ingest_event_id)
+                ingest_event_id = run_async(
+                    send_rag_ingest_event(object_key, upload_id, uploaded.name)
+                )
+                ingest_output = wait_for_run_output(ingest_event_id)
+                if ingest_output.get("error"):
+                    raise RuntimeError(ingest_output["error"])
+                ingested_count = ingest_output.get("ingested", 0)
+                if not isinstance(ingested_count, int) or ingested_count < 1:
+                    raise RuntimeError(
+                        ingest_output.get("message", "No text chunks were ingested from this PDF.")
+                    )
             except Exception as exc:
                 st.error(f"Could not finish ingestion: {exc}")
                 st.caption("Check that the Inngest dev server and API are running, then retry.")
             else:
                 st.session_state["last_upload_id"] = upload_id
-                uploaded_sources = st.session_state.setdefault("uploaded_sources", [])
-                if uploaded.name not in uploaded_sources:
-                    uploaded_sources.append(uploaded.name)
+                uploaded_sources[upload_id] = uploaded.name
                 st.success(f"Ingestion completed for: {uploaded.name}")
     else:
+        uploaded_sources[upload_id] = uploaded.name
         st.success(f"Ingestion is complete for: {uploaded.name}")
     st.caption("You can upload another PDF if you like.")
 
 st.divider()
 st.title("Ask a question about your PDFs")
-session_sources = st.session_state.get("uploaded_sources", [])
+session_sources = list(uploaded_sources)
 if session_sources:
+    latest_source = st.session_state.get("last_upload_id")
+    default_sources = (
+        [latest_source]
+        if latest_source in session_sources
+        else [session_sources[-1]]
+    )
+    source_labels = {
+        source_id: f"{uploaded_sources[source_id]} · {source_id[:8]}"
+        for source_id in session_sources
+    }
     selected_sources = st.multiselect(
-        "Search these PDFs",
+        "Search these PDFs (newest selected by default)",
         options=session_sources,
-        default=session_sources,
-        help="Only selected PDFs uploaded in this session will be searched.",
+        default=default_sources,
+        format_func=lambda source_id: source_labels[source_id],
+        help="The latest PDF is selected by default. Select older PDFs if you want to include them.",
     )
 else:
     selected_sources = []

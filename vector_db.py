@@ -46,7 +46,7 @@ class QdrantStorage:
                     with_payload=True,
                     limit=top_k,
                     query_filter=(
-                        Filter(must=[FieldCondition(key="source", match=MatchAny(any=source_ids))])
+                        Filter(must=[FieldCondition(key="source_id", match=MatchAny(any=source_ids))])
                         if source_ids else None
                     ),
                 ).points
