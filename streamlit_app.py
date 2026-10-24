@@ -1,10 +1,8 @@
-import asyncio
 import hashlib
 import logging
 import time
 
 import streamlit as st
-import inngest
 import os
 import requests
 
@@ -14,17 +12,6 @@ logging.basicConfig(level=logging.INFO)
 
 logger = logging.getLogger(__name__)
 INNGEST_API_BASE_URL = "https://api.inngest.com"
-
-
-def run_async(coro):
-    import asyncio
-
-    try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
 
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
@@ -48,34 +35,24 @@ if missing_frontend_settings:
     st.stop()
 
 
-@st.cache_resource
-def get_inngest_client() -> inngest.Inngest:
-    return inngest.Inngest(
-        api_base_url=INNGEST_API_BASE_URL,
-        app_id="rag_app",
-        event_key=os.environ["INNGEST_EVENT_KEY"],
-        signing_key=os.environ["INNGEST_SIGNING_KEY"],
-        is_production=True,
-        request_timeout=120_000,
-    )
-
-
-async def send_rag_ingest_event(object_key: str, source_id: str, source_name: str) -> str:
-    client = get_inngest_client()
+def send_inngest_event(event_name: str, data: dict) -> str:
+    """Publish one event through Inngest's hosted event endpoint."""
+    event_key = os.environ["INNGEST_EVENT_KEY"]
+    url = f"https://inn.gs/e/{event_key}"
     try:
-        result = await client.send(
-            inngest.Event(
-                name="rag/ingest_pdf",
-                data={
-                    "object_key": object_key,
-                    "source_id": source_id,
-                    "source_name": source_name,
-                },
-            )
+        response = requests.post(
+            url,
+            json={"name": event_name, "data": data},
+            timeout=30,
         )
-        return result[0]
+        response.raise_for_status()
+        result = response.json()
+        event_ids = result.get("ids") if isinstance(result, dict) else None
+        if not event_ids:
+            raise RuntimeError(f"Inngest returned no event ID: {result}")
+        return event_ids[0]
     except Exception:
-        logger.exception("Inngest ingestion event send failed")
+        logger.exception("Inngest event send failed: %s", event_name)
         raise
 
 
@@ -131,8 +108,13 @@ if uploaded is not None:
         with st.spinner("Uploading and triggering ingestion..."):
             try:
                 object_key = upload_pdf(uploaded.name, file_bytes)
-                ingest_event_id = run_async(
-                    send_rag_ingest_event(object_key, upload_id, uploaded.name)
+                ingest_event_id = send_inngest_event(
+                    "rag/ingest_pdf",
+                    {
+                        "object_key": object_key,
+                        "source_id": upload_id,
+                        "source_name": uploaded.name,
+                    },
                 )
                 ingest_output = wait_for_run_output(ingest_event_id)
                 if ingest_output.get("error"):
@@ -180,25 +162,6 @@ else:
     st.info("Upload and finish ingesting a PDF in this session before asking a question.")
 
 
-async def send_rag_query_event(question: str, top_k: int, source_ids: list[str]) -> str:
-    client = get_inngest_client()
-    try:
-        result = await client.send(
-            inngest.Event(
-                name="rag/query_pdf_ai",
-                data={
-                    "question": question,
-                    "top_k": top_k,
-                    "source_ids": source_ids,
-                },
-            )
-        )
-        return result[0]
-    except Exception:
-        logger.exception("Inngest query event send failed")
-        raise
-
-
 with st.form("rag_query_form"):
     question = st.text_input("Your question")
     top_k = st.number_input("How many chunks to retrieve", min_value=1, max_value=20, value=5, step=1)
@@ -210,7 +173,14 @@ with st.form("rag_query_form"):
         else:
             with st.spinner("Searching selected PDFs and generating answer..."):
                 try:
-                    event_id = run_async(send_rag_query_event(question.strip(), int(top_k), selected_sources))
+                    event_id = send_inngest_event(
+                        "rag/query_pdf_ai",
+                        {
+                            "question": question.strip(),
+                            "top_k": int(top_k),
+                            "source_ids": selected_sources,
+                        },
+                    )
                     output = wait_for_run_output(event_id)
                 except Exception as exc:
                     st.error(f"The query did not finish: {exc}")
