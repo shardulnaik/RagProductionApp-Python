@@ -24,6 +24,13 @@ def _inngest_is_production() -> bool:
     return bool(os.getenv("INNGEST_SIGNING_KEY"))
 
 
+def _inngest_api_base_url() -> str:
+    configured_base = os.getenv("INNGEST_API_BASE")
+    if configured_base:
+        return configured_base.rstrip("/")
+    return "https://api.inngest.com" if _inngest_is_production() else "http://localhost:8288"
+
+
 def run_async(coro):
     import asyncio
 
@@ -40,7 +47,7 @@ st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="center
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    api_base_url = os.getenv("INNGEST_API_BASE", "http://localhost:8288")
+    api_base_url = _inngest_api_base_url()
     return inngest.Inngest(
         api_base_url=api_base_url,
         app_id="rag_app",
@@ -157,7 +164,7 @@ async def send_rag_query_event(question: str, top_k: int, source_ids: list[str])
 
 
 def _inngest_api_base() -> str:
-    return os.getenv("INNGEST_API_BASE", "http://localhost:8288").rstrip("/")
+    return _inngest_api_base_url()
 
 
 def fetch_runs(event_id: str) -> list[dict]:

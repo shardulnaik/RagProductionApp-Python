@@ -27,11 +27,18 @@ def _inngest_is_production() -> bool:
     return bool(os.getenv("INNGEST_SIGNING_KEY"))
 
 
+def _inngest_api_base_url() -> str:
+    configured_base = os.getenv("INNGEST_API_BASE")
+    if configured_base:
+        return configured_base.rstrip("/")
+    return "https://api.inngest.com" if _inngest_is_production() else "http://localhost:8288"
+
+
 # Initialize Vector DB globally
 qdrant_store = QdrantStorage(dim=EMBED_DIM)
 
 inngest_client = inngest.Inngest(
-    api_base_url=os.getenv("INNGEST_API_BASE", "http://localhost:8288"),
+    api_base_url=_inngest_api_base_url(),
     app_id="rag_app",
     event_key=os.getenv("INNGEST_EVENT_KEY", "local"),
     signing_key=os.getenv("INNGEST_SIGNING_KEY"),
