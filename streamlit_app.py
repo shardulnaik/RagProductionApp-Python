@@ -51,10 +51,10 @@ def get_inngest_client() -> inngest.Inngest:
     )
 
 
-async def send_rag_ingest_event(object_key: str, source_id: str) -> None:
+async def send_rag_ingest_event(object_key: str, source_id: str) -> str:
     client = get_inngest_client()
     try:
-        await client.send(
+        result = await client.send(
             inngest.Event(
                 name="rag/ingest_pdf",
                 data={
@@ -63,6 +63,7 @@ async def send_rag_ingest_event(object_key: str, source_id: str) -> None:
                 },
             )
         )
+        return result[0]
     except Exception:
         logger.exception("Inngest ingestion event send failed")
         raise
@@ -78,22 +79,37 @@ if uploaded is not None:
         with st.spinner("Uploading and triggering ingestion..."):
             try:
                 object_key = upload_pdf(uploaded.name, file_bytes)
-                run_async(send_rag_ingest_event(object_key, uploaded.name))
+                ingest_event_id = run_async(send_rag_ingest_event(object_key, uploaded.name))
+                wait_for_run_output(ingest_event_id)
             except Exception as exc:
-                st.error(f"Could not start ingestion: {exc}")
+                st.error(f"Could not finish ingestion: {exc}")
                 st.caption("Check that the Inngest dev server and API are running, then retry.")
             else:
                 st.session_state["last_upload_id"] = upload_id
-                st.success(f"Triggered ingestion for: {uploaded.name}")
+                uploaded_sources = st.session_state.setdefault("uploaded_sources", [])
+                if uploaded.name not in uploaded_sources:
+                    uploaded_sources.append(uploaded.name)
+                st.success(f"Ingestion completed for: {uploaded.name}")
     else:
-        st.success(f"Ingestion was already triggered for: {uploaded.name}")
+        st.success(f"Ingestion is complete for: {uploaded.name}")
     st.caption("You can upload another PDF if you like.")
 
 st.divider()
 st.title("Ask a question about your PDFs")
+session_sources = st.session_state.get("uploaded_sources", [])
+if session_sources:
+    selected_sources = st.multiselect(
+        "Search these PDFs",
+        options=session_sources,
+        default=session_sources,
+        help="Only selected PDFs uploaded in this session will be searched.",
+    )
+else:
+    selected_sources = []
+    st.info("Upload and finish ingesting a PDF in this session before asking a question.")
 
 
-async def send_rag_query_event(question: str, top_k: int) -> str:
+async def send_rag_query_event(question: str, top_k: int, source_ids: list[str]) -> str:
     client = get_inngest_client()
     try:
         result = await client.send(
@@ -102,6 +118,7 @@ async def send_rag_query_event(question: str, top_k: int) -> str:
                 data={
                     "question": question,
                     "top_k": top_k,
+                    "source_ids": source_ids,
                 },
             )
         )
@@ -151,22 +168,23 @@ with st.form("rag_query_form"):
     submitted = st.form_submit_button("Ask")
 
     if submitted and question.strip():
-        with st.spinner("Sending event and generating answer..."):
-            # Fire-and-forget event to Inngest for observability/workflow
-            try:
-                event_id = run_async(send_rag_query_event(question.strip(), int(top_k)))
-                # Poll the configured Inngest API for the run's output
-                output = wait_for_run_output(event_id)
-            except Exception as exc:
-                st.error(f"The query did not finish: {exc}")
-                st.caption("Check the Inngest dashboard and API/worker terminal for details.")
-                st.stop()
-            answer = output.get("answer", "")
-            sources = output.get("sources", [])
+        if not selected_sources:
+            st.error("Select at least one PDF to search.")
+        else:
+            with st.spinner("Searching selected PDFs and generating answer..."):
+                try:
+                    event_id = run_async(send_rag_query_event(question.strip(), int(top_k), selected_sources))
+                    output = wait_for_run_output(event_id)
+                except Exception as exc:
+                    st.error(f"The query did not finish: {exc}")
+                    st.caption("Check the Inngest dashboard and API/worker terminal for details.")
+                    st.stop()
+                answer = output.get("answer", "")
+                sources = output.get("sources", [])
 
-        st.subheader("Answer")
-        st.write(answer or "(No answer)")
-        if sources:
-            st.caption("Sources")
-            for s in sources:
-                st.write(f"- {s}")
+            st.subheader("Answer")
+            st.write(answer or "(No answer)")
+            if sources:
+                st.caption("Sources")
+                for s in sources:
+                    st.write(f"- {s}")

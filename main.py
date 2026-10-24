@@ -97,13 +97,15 @@ async def rag_query_pdf_ai(ctx: inngest.Context) -> dict[str, Any]:
     # Fix 3: Validate top_k is strictly an integer
     raw_top_k = ctx.event.data.get("top_k", 5)
     top_k: int = int(raw_top_k) if isinstance(raw_top_k, (int, str)) else 5
+    raw_source_ids = ctx.event.data.get("source_ids", [])
+    source_ids = [source for source in raw_source_ids if isinstance(source, str)] if isinstance(raw_source_ids, list) else []
 
     # Step 1: Search Vector DB
     async def _search() -> dict[str, Any]:
         query_vecs = await asyncio.to_thread(embed_texts, [question])
         query_vec = query_vecs[0]
         
-        found = qdrant_store.search(query_vec, top_k)
+        found = qdrant_store.search(query_vec, top_k, source_ids or None)
         
         contexts = cast(list[str], found.get("contexts", []))
         raw_sources = cast(list[Any], found.get("sources", []))

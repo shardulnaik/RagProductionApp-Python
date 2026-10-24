@@ -1,7 +1,7 @@
 import os
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, PointStruct
+from qdrant_client.models import VectorParams, Distance, PointStruct, Filter, FieldCondition, MatchAny
 
 class QdrantStorage:
     def __init__(self, collection="docs", dim=1536):
@@ -37,13 +37,17 @@ class QdrantStorage:
         points = [PointStruct(id=ids[i], vector=vectors[i], payload=payloads[i]) for i in range(len(ids))]
         self.client.upsert(self.collection, points=points)
     
-    def search(self, query_vector, top_k: int = 5):
+    def search(self, query_vector, top_k: int = 5, source_ids: list[str] | None = None):
         self._ensure_collection()
         results = self.client.query_points(
                     collection_name=self.collection,
                     query=query_vector,
                     with_payload=True,
-                    limit=top_k
+                    limit=top_k,
+                    query_filter=(
+                        Filter(must=[FieldCondition(key="source", match=MatchAny(any=source_ids))])
+                        if source_ids else None
+                    ),
                 ).points
         
         contexts = []
